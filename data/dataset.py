@@ -9,21 +9,25 @@ class TokenizedDataset(Dataset):
     Args:
         token_ids (list): A massive, flat list of integers representing your entire text corpus.
         block_size (int): The context window length (e.g., 512 tokens).
+        stride (int): Distance between chunk starts; use block_size for sequential contexts.
 
     Reason:
         By storing the entire dataset as a single contiguous PyTorch LongTensor in the system RAM,
         we completely bypass disk I/O bottlenecks during training.
     """
-    def __init__(self, token_ids, block_size):
+    def __init__(self, token_ids, block_size, stride=1):
         if block_size < 1:
             raise ValueError("block_size must be positive")
         if len(token_ids) <= block_size:
             raise ValueError(f"Corpus must contain at least {block_size + 1} tokens")
+        if stride < 1:
+            raise ValueError("stride must be positive")
         self.data = torch.tensor(token_ids, dtype=torch.long)
         self.block_size = block_size
+        self.stride = stride
 
     def __len__(self):
-        return len(self.data) - self.block_size
+        return (len(self.data) - self.block_size - 1) // self.stride + 1
 
     def __getitem__(self, idx):
         """
@@ -36,7 +40,8 @@ class TokenizedDataset(Dataset):
         """
         if idx < 0 or idx >= len(self):
             raise IndexError("Dataset index out of range")
-        chunk = self.data[idx:idx + self.block_size + 1]
+        start = idx * self.stride
+        chunk = self.data[start:start + self.block_size + 1]
         x = chunk[:-1]  # Input sequence (context)
         y = chunk[1:]   # Target sequence (next token prediction)
         return x, y

@@ -104,7 +104,7 @@ def train_local_model(model, dataset, config, epochs=3):
     dataLoader = DataLoader(
         dataset,
         batch_size=config.batch_size,
-        shuffle=True,
+        shuffle=False,
         num_workers=0,
         pin_memory=device.type == "cuda"
     )

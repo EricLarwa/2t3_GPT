@@ -27,3 +27,14 @@ Implementation of the transformer block that will chain the attention engine tog
 - HuggingFace's Tokenizer is super easy to use. It's doing the majority (if not all) of the work inside of ```tokenizer.py``` I mean it even splits the whitespace for you.
 - Byte-Pair Encoding(BPE) breaks down text into manageable subwords units rather than whole words or individual characters. It also conserves the context window by grouping the subwords, meaning shorter token sequences than character-by-character splitting which leads to longer pieces of text within their memory limits. Boom, memory optimization son!
 - GradScaler, singificantly useful when your memory is low. Since gradients can occasionaly become too microscopic and rround to zero, it will dynamically multiply gradient sizes to protect arithmatic accurracy
+
+### WikiText-2 training pipeline
+
+`main.py` now calls `data/wiki_2_training.py` to prepare WikiText-2 automatically.
+Run `python main.py --epochs 1` from the project environment; no corpus or
+tokenizer path arguments are required. Data and tokenizer artifacts are stored
+under `data/training/wikitext-2/` and reused on later runs.
+
+Training uses consecutive context chunks with one-token-shifted targets and
+shuffling disabled. Only the training split is downloaded and used. See
+[ReadMe.md](ReadMe.md) for setup and runtime details.
