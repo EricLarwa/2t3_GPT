@@ -10,6 +10,7 @@ import torch
 from tokenizers import Tokenizer
 
 import main
+from learning import parsing as parser_module
 from data import wiki_2_training
 from data.dataset import TokenizedDataset
 from model.gpt import LocalGPT
@@ -58,8 +59,8 @@ class IntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             tokenizer_path = Path(directory) / "tokenizer.json"
             argv = ["main.py"]
-            with patch.object(main, "ModelConfig", TinyConfig), patch("sys.argv", argv), \
-                    patch.object(main, "TRAINING_DIR", Path(directory)), \
+            with patch.object(parser_module, "ModelConfig", TinyConfig), patch("sys.argv", argv), \
+                    patch.object(parser_module, "TRAINING_DIR", Path(directory)), \
                     patch.object(wiki_2_training, "TRAINING_DIR", Path(directory)), \
                     patch.object(wiki_2_training.datasets, "load_dataset", return_value=[
                         {"text": "hello world hello world"},
@@ -176,6 +177,7 @@ class IntegrationTests(unittest.TestCase):
             continued_state = load_checkpoint(continued / "latest.pt")
             self.assertEqual(original_state["global_step"], continued_state["global_step"])
             self.assertEqual(original_state["epoch"], continued_state["epoch"])
+            self.assertEqual(original_state["scheduler"], continued_state["scheduler"])
             for key, state in original_state["optimizer"]["state"].items():
                 for name, value in state.items():
                     torch.testing.assert_close(value, continued_state["optimizer"]["state"][key][name])
@@ -196,6 +198,42 @@ class IntegrationTests(unittest.TestCase):
         self.assertAlmostEqual(metrics["loss"], expected.item(), places=5)
         self.assertEqual(metrics["tokens"], len(dataset) * TinyConfig.block_size)
         self.assertTrue(model.training)
+
+    def test_scheduler_uses_current_validation_and_resumes_history(self):
+        config = TinyConfig()
+        dataset = TokenizedDataset(list(range(10)), config.block_size)
+        model = LocalGPT(config)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "latest.pt"
+            losses = [{"loss": value, "perplexity": 100.0} for value in (5.0, 5.1, 5.2)]
+            with patch("torch.cuda.is_available", return_value=False), \
+                    patch("model.train.evaluate_model", side_effect=losses), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                train_local_model(model, dataset, config, epochs=3,
+                                  checkpoint_dir=directory, validation_dataset=dataset)
+            state = load_checkpoint(path)
+            self.assertEqual(state["scheduler"]["best"], 5.0)
+            self.assertEqual(state["scheduler"]["num_bad_epochs"], 2)
+            self.assertAlmostEqual(state["optimizer"]["param_groups"][0]["lr"], 6e-4)
+            with patch("torch.cuda.is_available", return_value=False), \
+                    patch("model.train.evaluate_model", return_value={"loss": 5.3, "perplexity": 100.0}), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                train_local_model(LocalGPT(config), dataset, config, epochs=1,
+                                  checkpoint_dir=directory, validation_dataset=dataset, resume=state)
+            state = load_checkpoint(path)
+            self.assertEqual(state["scheduler"]["num_bad_epochs"], 0)
+            self.assertAlmostEqual(state["optimizer"]["param_groups"][0]["lr"], 3e-4)
+
+            # Legacy checkpoints retain their historical best when starting a scheduler.
+            state.pop("scheduler")
+            with patch("torch.cuda.is_available", return_value=False), \
+                    patch("model.train.evaluate_model", return_value={"loss": 5.4, "perplexity": 100.0}), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                train_local_model(LocalGPT(config), dataset, config, epochs=1,
+                                  checkpoint_dir=directory, validation_dataset=dataset, resume=state)
+            state = load_checkpoint(path)
+            self.assertEqual(state["scheduler"]["best"], 5.0)
+            self.assertEqual(state["scheduler"]["num_bad_epochs"], 1)
 
     def test_generation_crops_context_and_restores_mode(self):
         model = LocalGPT(TinyConfig())

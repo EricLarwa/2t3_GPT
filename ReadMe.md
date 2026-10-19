@@ -44,6 +44,18 @@ optimizer, mixed precision scaler, epoch/batch position, random state, and the
 tokenizer. Writes use a temporary file and atomic replacement. Change the batch
 interval with `--save-every 50`.
 
+`learning/parsing.py` returns a typed training setup consumed by
+`learning/data_setup.py`; `main.py` calls its `setup_data()` entry point.
+After each validation pass, ReduceLROnPlateau checks the current validation loss.
+With patience 2, it halves the learning rate after three consecutive
+non-improving checks, down to a minimum of `1e-5`. Scheduler history is saved
+in checkpoints and restored on resume. Older checkpoints initialize the
+scheduler from their saved best validation loss because their earlier plateau
+history is unavailable. There is currently no automatic early stopping.
+
+The default dropout is 0.2 for new models. Resuming restores the checkpoint's
+dropout setting, so changing `model_conf.py` does not alter existing runs.
+
 Continue the latest checkpoint for three additional epochs:
 
 ```powershell

@@ -43,7 +43,7 @@ def create_optimizer(model, device, optimizer_type=None):
             if optimizer_type == "AdamW8bit":
                 raise ValueError(
                     "This checkpoint requires bitsandbytes. Install it with "
-                    "local_ai_env/Scripts/python.exe -m pip install bitsandbytes, then resume again"
+                    "x_env_dir/Scripts/python.exe -m pip install bitsandbytes, then resume again"
                 ) from error
             bnb = None
     else:
@@ -154,6 +154,16 @@ def train_local_model(model, dataset, config, epochs=3, *, checkpoint_dir=None,
             torch.cuda.set_rng_state_all(resume["cuda_rng_state"])
         print(f"Resuming epoch {start_epoch + 1}, batch {next_batch}, step {global_step}")
 
+    reduce_learning_rate = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min", factor=0.5, patience=2, min_lr=1e-5,
+    )
+    if resume is not None:
+        if "scheduler" in resume:
+            reduce_learning_rate.load_state_dict(resume["scheduler"])
+        elif best_validation_loss < float("inf"):
+            # Older checkpoints have a validation baseline but no scheduler history.
+            reduce_learning_rate.step(best_validation_loss)
+
     def persist(epoch, batch, *, best=False):
         if checkpoint_dir is None:
             return
@@ -161,6 +171,7 @@ def train_local_model(model, dataset, config, epochs=3, *, checkpoint_dir=None,
             "config": config_dict(config), "model": model.state_dict(),
             "optimizer": optimizer.state_dict(), "optimizer_type": type(optimizer).__name__,
             "scaler": scaler.state_dict(), "epoch": epoch, "next_batch": batch,
+            "scheduler": reduce_learning_rate.state_dict(),
             "global_step": global_step, "best_validation_loss": best_validation_loss,
             "rng_state": torch.get_rng_state(),
             "cuda_rng_state": torch.cuda.get_rng_state_all() if device.type == "cuda" else [],
@@ -219,4 +230,6 @@ def train_local_model(model, dataset, config, epochs=3, *, checkpoint_dir=None,
             print(f"Validation loss: {metrics['loss']:.4f} | Perplexity: {metrics['perplexity']:.2f}")
             improved = metrics["loss"] < best_validation_loss
             best_validation_loss = min(best_validation_loss, metrics["loss"])
+            reduce_learning_rate.step(metrics["loss"])  # Adjust learning rate based on validation loss
+            print(f"Learning rate for next epoch: {optimizer.param_groups[0]['lr']:.6g}")
         persist(epoch + 1, 0, best=improved)

@@ -1,5 +1,4 @@
-"""TODO(wikitext): Add a description here."""
-
+"""WikiText-2 Dataset used for training and validation of the GPT model."""
 
 import os
 from pathlib import Path
