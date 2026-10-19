@@ -1,0 +1,3 @@
+torch>=2.3
+tokenizers>=0.19
+# Optional CUDA optimizer: install bitsandbytes to use AdamW8bit.

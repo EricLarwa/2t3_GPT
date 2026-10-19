@@ -1,9 +1,7 @@
-from tokenizer import Tokenizer
-from tokenizer.models import BPE
+from tokenizers import Tokenizer
+from tokenizers.models import BPE
 from tokenizers.trainers import BpeTrainer
 from tokenizers.pre_tokenizers import Whitespace
-import torch
-import os
 
 def build_and_train_tokenizer(input_text_path, save_path, vocab_size=8000):
     """
@@ -17,7 +15,7 @@ def build_and_train_tokenizer(input_text_path, save_path, vocab_size=8000):
     Reason:
         We use the Rust-backed 'tokenizers' library to leverage all cores of the CPU.
         Writing this in pure Python would take hours; in Rust/C++, it completes a multi-megabyte file in seconds.
-        
+
     Output:
         Saves a 'tokenizer.json' file to disk which can map raw text strings to integer lists.
     """
@@ -29,9 +27,9 @@ def build_and_train_tokenizer(input_text_path, save_path, vocab_size=8000):
     tokenizer.pre_tokenizer = Whitespace()
 
     # Configure the trainer, injecting necessary special control tokens
-    trainer = ByteTrainer(
+    trainer = BpeTrainer(
         vocab_size=vocab_size,
-        special_token=["[UNK]", "[PAD]", "[CLS]", "[SEP]", "[MASK]", "[BOS]", "[EOS]"]
+        special_tokens=["[UNK]", "[PAD]", "[CLS]", "[SEP]", "[MASK]", "[BOS]", "[EOS]"]
     )
 
     # Trrain the tokenizer using multi-threading

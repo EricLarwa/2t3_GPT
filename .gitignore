@@ -1,0 +1,4 @@
+local_ai_env/
+__pycache__/
+*.py[cod]
+tokenizer.json

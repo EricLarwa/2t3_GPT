@@ -1,24 +1,36 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import os
 
-from model_conf import ModelConfig
-
-device = torch.device("cuda" if torch.cuda_is_available() else "cpu")
+from torch.amp import autocast, GradScaler
+from torch.utils.data import DataLoader
+from .model_conf import ModelConfig
+from .build import CasualSelfAttention
 
 os.environ["OMP_NUM_THREADS"] = "4"
 os.environ["MKL_NUM_THREADS"] = "4"
 
 torch.set_float32_matmul_precision("high")
 
+
+def get_training_device():
+    if torch.cuda.is_available():
+        try:
+            # CUDA detection alone does not guarantee this build supports the GPU.
+            torch.ones(1, device="cuda").sum().item()
+            return torch.device("cuda")
+        except RuntimeError as error:
+            print(f"CUDA execution failed; using CPU. Check the PyTorch CUDA build: {error}")
+    return torch.device("cpu")
+
+
 class TransformerBlock(nn.Module):
-    """ 
+    """
     A single transformer block consisting of a multi-head attention layer and a feed-forward network.
-    args: 
+    args:
         config: ModelConfig object containing model hyperparameters.
         x: Tensor of shape (batch_size, block_size, n_embd) representing the input to the transformer block.
-    
+
     outputs:
         x: Tensor of shape (batch_size, block_size, n_embd) after passing through the transformer block.
 
@@ -28,18 +40,19 @@ class TransformerBlock(nn.Module):
         3. Normalizes the output of the attention layer.
         4. Passes the normalized output through a feed-forward network (MLP) with GELU activation and dropout.
 
-    """ 
+    """
     def __init__(self, config: ModelConfig):
         super().__init__()
 
         # Multi-head attention layer using pyTorch's optimized math
         self.ln_1 = nn.LayerNorm(config.n_embd)
-        self.ln_2 = nn.LayerNorm(config.n_head)
+        self.ln_2 = nn.LayerNorm(config.n_embd)
+        self.attn = CasualSelfAttention(config)
 
         # feed-forward network (MLP) with GELU activation and dropout for regularization
         self.mlp = nn.Sequential(
             nn.Linear(config.n_embd, 4 * config.n_embd),
-            nn.GELU(), # Gaussian Error Linear Unit function AKA boring math 
+            nn.GELU(), # Gaussian Error Linear Unit function AKA boring math
             nn.Linear(4 * config.n_embd, config.n_embd),
             nn.Dropout(config.dropout)
         )
@@ -48,83 +61,73 @@ class TransformerBlock(nn.Module):
         # pyTorch dot product attention for speed
         # automatically triggers FlashAttention
         norm_x = self.ln_1(x)
+        x = x + self.attn(norm_x)
 
         # Self-Attention pyTorch logic (layers)
         x = x + self.mlp(self.ln_2(x))
         return x
 
-class CasualSelfAttention(nn.Module):
+
+def train_local_model(model, dataset, config, epochs=3):
     """
-    A casual self-attention layer that computes attention scores and applies them to the input.
+    Trains the LocalGPT model on the provided dataset.
+
     Args:
+        model: The LocalGPT model to be trained.
+        dataset: The TokenizerDataset containing the training data.
         config: ModelConfig object containing model hyperparameters.
-        x: Tensor of shape (batch_size, block_size, n_embd) representing the input to the attention layer.
-    Outputs:
-        x: Tensor of shape (batch_size, block_size, n_embd) after applying self-attention.
-
-    How it behaves:
-        1. Projects input vectors into Query(Q), Key(K), and Value(V) tensors.
-        2. Splits those tensors into multiple 'heads' to look at differrent contextual relationships in parallel.
-        3, Uses a casual mask to ensure token (N) can only see tokens 0 to N
-        4. Fuses the heads back together and projects them to the embedded space.
+        epochs: Number of training epochs (default is 3).
     """
-    def __init__(self, config: ModelConfig):
-        super().__init__()
-        assert config.n_embd % config.n_head == 0, "Embedding dimension must be divisible by number of heads"
 
-        self.n_head = config.n_head
-        self.n_embd = config.n_embd
+    device = get_training_device()
+    model = model.to(device)
 
-        # Key, Query, Value projections for all heads
-        # Reason: Running one large matric multiplication is more efficient than running multiple smaller ones
-        self.c_attn = nn.linear(config.n_embd, 3 * config.n_embd)
+    # Gradient Checkpointing
+    # Reason: Instead of storing every single mathmatical activation value accross
+    # the entire model, we only store the inputs and recompute the activations during
+    # the backward pass.
+    model.gradient_checkpointing_enable()
 
-        # Output projection layer to mix the ouputs of all attention heads
-        self.c_proj = nn.Linear(config.n_embd, config.n_embd)
+    # AdamW Optimizer with 8-bit precision using bitsandbytes library
+    if device.type == "cuda":
+        try:
+            import bitsandbytes as bnb
+        except ImportError:
+            bnb = None
+    else:
+        bnb = None
+    optimizer_class = bnb.optim.AdamW8bit if bnb is not None else torch.optim.AdamW
+    optimizer = optimizer_class(model.parameters(), lr=6e-4, weight_decay=0.1)
 
-        # Create a lower-triangular matrix of 1s (casual mask) and save it as a buffer to avoid recalculating it every forward pass
-        # Reason: Buffers are state variables that belong to the module but are not considered parameters, so they are'nt updated during training
-        self.register_buffer("bias", torch.trill(torch.ones(config.block_size, config.block_size))
-                                            .view(1, 1, config.block_size, config.block_size))   
+    scaler = GradScaler("cuda", enabled=device.type == "cuda")  # For mixed precision training
 
-    def forward(self, x):
-        """
-        Processes the forward pass of self-attention. 
+    dataLoader = DataLoader(
+        dataset,
+        batch_size=config.batch_size,
+        shuffle=True,
+        num_workers=0,
+        pin_memory=device.type == "cuda"
+    )
 
-        Args: 
-            x: Tensor of shape (batch_size, block_size, n_embd) representing the input to the attention layer.
-        
-        Output: 
-            torch.Tensor: Attended tensor of shape (batch_size, block_size, n_embd) after applying self-attention.
-        """
+    model.train()  # Set the model to training mode
+    print("Starting training...")
 
-        B, T, C = x.size()  # Batch size, sequence length, embedding dimension
+    for epoch in range(epochs):
+        for step, (x, y) in enumerate(dataLoader):
+            x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
 
-        # Step 1. Project input vectors into Query(Q), Key(K), and Value(V) tensors
-        q, k, v = self.c_attn(x).split(self.n_embd, dim=2) 
+            optimizer.zero_grad(set_to_none=True)  # Clear previous gradients
 
-        # Step 2. Reshape into multi-head format: (B, T, C) -> (B, T, n_head, head_size) -> (B, n_head, T, head_size)
-        # Reason: Transposing puts the sequence length (T) in the 3rd dimension, which is required for the attention computation
-        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
-        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+            with autocast(device_type=device.type, enabled=device.type == "cuda"):  # Mixed precision context
+                logits, loss = model(x, y)  # Forward pass and loss computation
 
-        # Step 3. FlashAttention Execution
-        # Function: torch.nn.functional.scaled_dot_product_attention
-        # Reason: This is a crucial built-in PyTorch optimization. Instead of calculating a massive,
-        # intermediate attention matrix (O(N²)) in Python and exhausting the 8GB VRAM.
-        # It automatically applies the causal mask when `is_causal=True`.
-        y = F.scaled_dot_product_attention(
-            q, k, v
-            attn_mask=None,
-            dropout_p=self.idx_dropout if self.training else 0.0,
-            is_causal=True
-        )
+            scaler.scale(loss).backward()  # Backpropagation with scaled loss
 
-        # Reassemble the heads back into a contiguous sequence: (B, n_head, T, head_size) -> (B, T, C)
-        # Reason: .contiguous() forces pyTorch to reallocate memory linearly, which is required for the next linear layer to work correctly
-        y = y.transpose(1, 2).contiguous().view(B, T, C)
+            scaler.unscale_(optimizer)  # Unscale gradients before clipping
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
-        # step 4. Final output projection to mix the outputs of all attention heads
-        out = self.resid_dropout(se;f.c_proj(y))
-        return out
+            scaler.step(optimizer)  # Update parameters
+            scaler.update()  # Update the scale for next iteration
+
+            if step % 10 == 0:
+                print(f"Epoch: {epoch} | Step: {step} | Loss Value: {loss.item():.4f}")
