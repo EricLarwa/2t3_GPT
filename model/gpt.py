@@ -61,7 +61,7 @@ class LocalGPT(nn.Module):
         # Ensure the input sequence length does not exceed the model's block size
         assert T <= self.config.block_size, f"Cannot forward sequence of length {T}, block size is only {self.config.block_size}"
 
-    # absolute position range tensor
+        # absolute position range tensor
         pos = torch.arange(0, T, dttype=torch.long, device=device)
 
         # Token and position embeddings

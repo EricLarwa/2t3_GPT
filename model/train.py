@@ -122,7 +122,7 @@ class CasualSelfAttention(nn.Module):
         )
 
         # Reassemble the heads back into a contiguous sequence: (B, n_head, T, head_size) -> (B, T, C)
-        # Reason: .contiguous() forces pYTorch to reallocate memory linearly, which is required for the next linear layer to work correctly
+        # Reason: .contiguous() forces pyTorch to reallocate memory linearly, which is required for the next linear layer to work correctly
         y = y.transpose(1, 2).contiguous().view(B, T, C)
 
         # step 4. Final output projection to mix the outputs of all attention heads
