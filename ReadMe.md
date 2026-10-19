@@ -53,6 +53,10 @@ Continue the latest checkpoint for three additional epochs:
 A checkpoint from an incomplete epoch first finishes that epoch, counting it as
 one of the requested epochs. Resume requires the same training token sequence,
 configuration, and optimizer type; its saved tokenizer is authoritative.
+The checkpoint selects its original optimizer even when optional dependencies
+have changed: an AdamW checkpoint continues with AdamW on either CPU or CUDA,
+even if bitsandbytes was installed later. AdamW8bit checkpoints require CUDA
+and bitsandbytes to resume. No optimizer state is discarded automatically.
 To avoid overwriting trained weights, a fresh run stops if a checkpoint already
 exists and asks you to use resume or evaluation mode.
 

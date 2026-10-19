@@ -28,6 +28,31 @@ def get_training_device():
     return torch.device("cpu")
 
 
+def create_optimizer(model, device, optimizer_type=None):
+    """Honor a checkpoint's optimizer before considering optional dependencies."""
+    if optimizer_type == "AdamW":
+        return torch.optim.AdamW(model.parameters(), lr=6e-4, weight_decay=0.1)
+    if optimizer_type not in {None, "AdamW8bit"}:
+        raise ValueError(f"Unsupported checkpoint optimizer: {optimizer_type}")
+    if optimizer_type == "AdamW8bit" and device.type != "cuda":
+        raise ValueError("This AdamW8bit checkpoint requires working CUDA to resume; use --evaluate-only for inference")
+    if device.type == "cuda":
+        try:
+            import bitsandbytes as bnb
+        except ImportError as error:
+            if optimizer_type == "AdamW8bit":
+                raise ValueError(
+                    "This checkpoint requires bitsandbytes. Install it with "
+                    "local_ai_env/Scripts/python.exe -m pip install bitsandbytes, then resume again"
+                ) from error
+            bnb = None
+    else:
+        bnb = None
+    # bitsandbytes publicly re-exports AdamW8bit without an explicit typed re-export.
+    optimizer_class = bnb.optim.AdamW8bit if bnb is not None else torch.optim.AdamW  # pyright: ignore[reportPrivateImportUsage]
+    return optimizer_class(model.parameters(), lr=6e-4, weight_decay=0.1)
+
+
 class TransformerBlock(nn.Module):
     """
     A single transformer block consisting of a multi-head attention layer and a feed-forward network.
@@ -102,15 +127,9 @@ def train_local_model(model, dataset, config, epochs=3, *, checkpoint_dir=None,
     model.gradient_checkpointing_enable()
 
     # AdamW Optimizer with 8-bit precision using bitsandbytes library
-    if device.type == "cuda":
-        try:
-            import bitsandbytes as bnb
-        except ImportError:
-            bnb = None
-    else:
-        bnb = None
-    optimizer_class = bnb.optim.AdamW8bit if bnb is not None else torch.optim.AdamW
-    optimizer = optimizer_class(model.parameters(), lr=6e-4, weight_decay=0.1)
+    optimizer_type = resume["optimizer_type"] if resume is not None else None
+    optimizer = create_optimizer(model, device, optimizer_type)
+    print(f"Training device: {device} | Optimizer: {type(optimizer).__name__}")
 
     scaler = GradScaler("cuda", enabled=device.type == "cuda")  # For mixed precision training
 
@@ -123,8 +142,6 @@ def train_local_model(model, dataset, config, epochs=3, *, checkpoint_dir=None,
             raise ValueError("Checkpoint configuration or training data differs from this run")
         if resume["tokenizer_json"] != tokenizer_json:
             raise ValueError("Checkpoint tokenizer differs from this run")
-        if resume["optimizer_type"] != optimizer_class.__name__:
-            raise ValueError("Restore the checkpoint's optimizer dependency before resuming")
         model.load_state_dict(resume["model"])
         optimizer.load_state_dict(resume["optimizer"])
         if scaler.is_enabled() and resume["scaler"]:
@@ -142,7 +159,7 @@ def train_local_model(model, dataset, config, epochs=3, *, checkpoint_dir=None,
             return
         state = {
             "config": config_dict(config), "model": model.state_dict(),
-            "optimizer": optimizer.state_dict(), "optimizer_type": optimizer_class.__name__,
+            "optimizer": optimizer.state_dict(), "optimizer_type": type(optimizer).__name__,
             "scaler": scaler.state_dict(), "epoch": epoch, "next_batch": batch,
             "global_step": global_step, "best_validation_loss": best_validation_loss,
             "rng_state": torch.get_rng_state(),
