@@ -1,5 +1,8 @@
 
 import argparse
+import math
+import torch
+from torch.utils.data import DataLoader
 
 from tokenizers import Tokenizer
 
@@ -42,6 +45,32 @@ def main():
     model = LocalGPT(config)
 
     train_local_model(model, dataset, config, epochs=args.epochs)
+    model.eval()  # Disable dropout for evaluation
+    device = next(model.parameters()).device
+
+    # Score a small batch from the training corpus.
+    x, y = next(iter(DataLoader(dataset, batch_size=4)))
+    x, y = x.to(device), y.to(device)
+
+    with torch.inference_mode():
+        _, loss = model(x, y)
+
+    print(f"Training sample loss: {loss.item():.4f}")
+    print(f"Training sample perplexity: {math.exp(loss.item()):.2f}")
+
+    # Give the model a corpus prefix and let it continue.
+    prompt = x[:1, :8]
+    generated = prompt.clone()
+
+    with torch.inference_mode():
+        for _ in range(50):
+            context = generated[:, -config.block_size:]
+            logits, _ = model(context)
+            next_token = logits[:, -1, :].argmax(dim=-1, keepdim=True)
+            generated = torch.cat((generated, next_token), dim=1)
+
+    print("Prompt:", tokenizer.decode(prompt[0].tolist()))
+    print("Continuation:", tokenizer.decode(generated[0].tolist()))
 
 
 if __name__ == "__main__":
