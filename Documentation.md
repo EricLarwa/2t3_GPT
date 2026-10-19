@@ -22,3 +22,7 @@ Implementation of the transformer block that will chain the attention engine tog
 
 ### Why Do We Need It? 
 - Transformers are the latest adaptation to the AI cycle (kind of, Google's researchers made this around 2017...I think). Transformers were brought in to solve the sequential processing bottleneck and long-range context limitations of older Nueral Networks. 
+
+### WDWL
+- HuggingFace's Tokenizer is super easy to use. It's doing the majority (if not all) of the work inside of ```tokenizer.py``` I mean it even splits the whitespace for you. 
+- Byte-Pair Encoding(BPE) breaks down text into manageable subwords units rather than whole words or individual characters. It also conserves the context window by grouping the subwords, meaning shorter token sequences than character-by-character splitting which leads to longer pieces of text within their memory limits. Boom, memory optimization son!
