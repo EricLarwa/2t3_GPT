@@ -1,8 +1,11 @@
+import bitsandbytes as bnb
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import os
 
+from torch.cuda.amp import autocast, GradScaler
 from model_conf import ModelConfig
 
 device = torch.device("cuda" if torch.cuda_is_available() else "cpu")
@@ -126,5 +129,61 @@ class CasualSelfAttention(nn.Module):
         y = y.transpose(1, 2).contiguous().view(B, T, C)
 
         # step 4. Final output projection to mix the outputs of all attention heads
-        out = self.resid_dropout(se;f.c_proj(y))
+        out = self.resid_dropout(self.c_proj(y))
         return out
+
+def train_local_model(model, dataset, config, epochs=3):
+    """
+    Trains the LocalGPT model on the provided dataset.
+
+    Args:
+        model: The LocalGPT model to be trained.
+        dataset: The TokenizerDataset containing the training data.
+        config: ModelConfig object containing model hyperparameters.
+        epochs: Number of training epochs (default is 3).
+    """
+
+    device = torch.device("cuda")
+    model = model.to(device)
+
+    # Gradient Checkpointing
+    # Reason: Instead of storing every single mathmatical activation value accross
+    # the entire model, we only store the inputs and recompute the activations during 
+    # the backward pass.
+    model.gradient_checlpointing_enable()
+
+    # AdamW Optimizer with 8-bit precision using bitsandbytes library
+     optimizer = bnb.optim.AdamW8bit(model.parameters(), lr=6e-4, weight_decay=0.1)
+
+     scaler = GradScaler()  # For mixed precision training
+
+     dataLoader = DataLoader(
+        dataset,
+        batch_size=config.batch_size,
+        shuffle=True,
+        num_workers=4,
+        pin_memory=True
+     )
+
+     model.train()  # Set the model to training mode
+     print("Starting training...")
+
+     for epoch in range(epochs):
+        for step, (x, y) in enumerate(dataLoader):
+            x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
+
+            optimizer.zero_grad(set_to_none=True)  # Clear previous gradients
+
+            with autocast():  # Mixed precision context
+                logits, loss = model(x, y)  # Forward pass and loss computation
+
+            scaler.scale(loss).backward()  # Backpropagation with scaled loss
+
+            scaler.unscale_(optimizer)  # Unscale gradients before clipping
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+            scaler.step(optimizer)  # Update parameters
+            scaler.update()  # Update the scale for next iteration
+
+            if step % 10 == 0:
+                print(f"Epoch: {epoch} | Step: {step} | Loss Value: {loss.item():.4f}")

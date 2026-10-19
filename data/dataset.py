@@ -1,7 +1,7 @@
 
 from torch.utils.data import Dataset, DataLoader
 
-class TokenizerDataset(Dataset):
+class TokenizedDataset(Dataset):
     """
     A high-performance PyTorch dataset that slices token sequences into context chunks.
     

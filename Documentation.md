@@ -26,3 +26,4 @@ Implementation of the transformer block that will chain the attention engine tog
 ### WDWL
 - HuggingFace's Tokenizer is super easy to use. It's doing the majority (if not all) of the work inside of ```tokenizer.py``` I mean it even splits the whitespace for you. 
 - Byte-Pair Encoding(BPE) breaks down text into manageable subwords units rather than whole words or individual characters. It also conserves the context window by grouping the subwords, meaning shorter token sequences than character-by-character splitting which leads to longer pieces of text within their memory limits. Boom, memory optimization son!
+- GradScaler, singificantly useful when your memory is low. Since gradients can occasionaly become too microscopic and rround to zero, it will dynamically multiply gradient sizes to protect arithmatic accurracy 
