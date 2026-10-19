@@ -9,6 +9,7 @@ import torch
 from tokenizers import Tokenizer
 
 import main
+from data import wiki_2_training
 from data.dataset import TokenizedDataset
 from model.gpt import LocalGPT
 from model.model_conf import ModelConfig
@@ -34,16 +35,29 @@ class IntegrationTests(unittest.TestCase):
 
     def test_entrypoint_trains_with_new_and_saved_tokenizer(self):
         with tempfile.TemporaryDirectory() as directory:
-            corpus = Path(directory) / "corpus.txt"
             tokenizer_path = Path(directory) / "tokenizer.json"
-            corpus.write_text("hello world hello world hello world hello world", encoding="utf-8")
-            argv = ["main.py", "--corpus", str(corpus), "--tokenizer", str(tokenizer_path)]
+            argv = ["main.py"]
             with patch.object(main, "ModelConfig", TinyConfig), patch("sys.argv", argv), \
+                    patch.object(main, "TRAINING_DIR", Path(directory)), \
+                    patch.object(wiki_2_training, "TRAINING_DIR", Path(directory)), \
+                    patch.object(wiki_2_training.datasets, "load_dataset", return_value=[
+                        {"text": "hello world hello world"},
+                        {"text": ""},
+                        {"text": "hello world hello world"},
+                    ]) as loader, \
                     patch("torch.cuda.is_available", return_value=False), \
                     contextlib.redirect_stdout(io.StringIO()) as output:
                 main.main()
                 main.main()
             self.assertEqual(output.getvalue().count("Starting training..."), 2)
+            loader.assert_called_once_with(
+                "parquet", data_files={"train": wiki_2_training.TRAINING_URL}, split="train",
+                cache_dir=str(Path(directory) / "cache"),
+                download_config=wiki_2_training.datasets.DownloadConfig(
+                    cache_dir=str(Path(directory) / "downloads")),
+            )
+            self.assertEqual((Path(directory) / "train.txt").read_text(encoding="utf-8"),
+                             "hello world hello world\n\nhello world hello world\n")
             tokenizer = Tokenizer.from_file(str(tokenizer_path))
             self.assertGreater(tokenizer.get_vocab_size(), 7)
 
@@ -68,8 +82,10 @@ class IntegrationTests(unittest.TestCase):
         dataset = TokenizedDataset(list(range(10)), TinyConfig.block_size)
         before = model.lm_head.weight.detach().clone()
         with patch("torch.cuda.is_available", return_value=False), \
+                patch("model.train.DataLoader", wraps=torch.utils.data.DataLoader) as batches, \
                 contextlib.redirect_stdout(io.StringIO()):
             train_local_model(model, dataset, TinyConfig(), epochs=1)
+        self.assertFalse(batches.call_args.kwargs["shuffle"])
         self.assertFalse(torch.equal(before, model.lm_head.weight))
         for name, parameter in model.named_parameters():
             self.assertIsNotNone(parameter.grad, name)
@@ -82,6 +98,15 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(y.tolist(), [1, 2, 3, 4])
         with self.assertRaises(ValueError):
             TokenizedDataset([0, 1], 4)
+
+    def test_sequential_chunks(self):
+        dataset = TokenizedDataset(list(range(12)), block_size=4, stride=4)
+        self.assertEqual(len(dataset), 2)
+        self.assertEqual(dataset[0][0].tolist(), [0, 1, 2, 3])
+        self.assertEqual(dataset[1][0].tolist(), [4, 5, 6, 7])
+        self.assertEqual(dataset[1][1].tolist(), [5, 6, 7, 8])
+        with self.assertRaises(IndexError):
+            dataset[2]
 
 
 if __name__ == "__main__":
