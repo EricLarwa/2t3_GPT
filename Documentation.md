@@ -36,5 +36,7 @@ tokenizer path arguments are required. Data and tokenizer artifacts are stored
 under `data/training/wikitext-2/` and reused on later runs.
 
 Training uses consecutive context chunks with one-token-shifted targets and
-shuffling disabled. Only the training split is downloaded and used. See
+shuffling disabled. Training and validation are downloaded separately; only
+training text is used to learn the tokenizer and model weights. Checkpoints
+preserve progress for `--resume`; `--evaluate-only` tests without training. See
 [ReadMe.md](ReadMe.md) for setup and runtime details.

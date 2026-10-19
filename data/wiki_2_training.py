@@ -1,10 +1,13 @@
-"""TODO(wikitext): Add a description here."""
-
+"""WikiText-2 Dataset used for training and validation of the GPT model."""
 
 import os
 from pathlib import Path
+from typing import Any, Iterator, cast
 
 import datasets
+from datasets.download.download_manager import DownloadManager
+from datasets.download.streaming_download_manager import StreamingDownloadManager
+from .wikitext import prepare_split
 
 
 TRAINING_DIR = Path(__file__).resolve().parent / "training" / "wikitext-2"
@@ -14,33 +17,14 @@ TRAINING_URL = (
 )
 
 
-def prepare_wikitext2():
-    """Prepare the WikiText-2 raw training split inside the repository.
+def prepare_wikitext2(split: str = "train") -> Path:
+    """Prepare one WikiText-2 raw split inside the repository.
 
     Use the maintained Hub dataset rather than the legacy archive URLs in the
-    original builder below. Validation and test text never enter the corpus.
+    original builder below. Each split has its own file, keeping validation
+    and test text out of the training corpus and tokenizer training.
     """
-    TRAINING_DIR.mkdir(parents=True, exist_ok=True)
-    corpus_path = TRAINING_DIR / "train.txt"
-    if corpus_path.is_file() and corpus_path.stat().st_size:
-        return corpus_path
-
-    training = datasets.load_dataset(
-        "parquet",
-        data_files={"train": TRAINING_URL},
-        split="train",
-        cache_dir=str(TRAINING_DIR / "cache"),
-        download_config=datasets.DownloadConfig(cache_dir=str(TRAINING_DIR / "downloads")),
-    )
-    temporary_path = corpus_path.with_suffix(".tmp")
-    try:
-        with temporary_path.open("w", encoding="utf-8", newline="\n") as corpus:
-            for row in training:
-                corpus.write(row["text"].rstrip("\r\n") + "\n")
-        temporary_path.replace(corpus_path)
-    finally:
-        temporary_path.unlink(missing_ok=True)
-    return corpus_path
+    return prepare_split(split, TRAINING_DIR, [TRAINING_URL.replace("/train-", f"/{split}-")])
 
 
 _CITATION = """\
@@ -67,7 +51,7 @@ _DATA_URL = "https://s3.amazonaws.com/research.metamind.io/wikitext"
 class WikitextConfig(datasets.BuilderConfig):
     """BuilderConfig for GLUE."""
 
-    def __init__(self, data_url, **kwargs):
+    def __init__(self, data_url: str, **kwargs):
         """BuilderConfig for Wikitext
 
         Args:
@@ -134,82 +118,87 @@ class Wikitext(datasets.GeneratorBasedBuilder):
             citation=_CITATION,
         )
 
-    def _split_generators(self, dl_manager):
+    def _split_generators(self, dl_manager: DownloadManager | StreamingDownloadManager):
         """Returns SplitGenerators."""
         # TODO(wikitext): Downloads the data and defines the splits
         # dl_manager is a datasets.download.DownloadManager that can be used to
         # download and extract URLs
+        if not isinstance(self.config, WikitextConfig):
+            raise TypeError("Wikitext requires a WikitextConfig")
+
         if self.config.name == "wikitext-103-v1":
-            data_file = dl_manager.download_and_extract(self.config.data_url)
+            # A scalar URL produces a scalar path; the library also types nested inputs.
+            data_file = cast(str, dl_manager.download_and_extract(self.config.data_url))
             data_dir = os.path.join(data_file, "wikitext-103")
             return [
                 datasets.SplitGenerator(
-                    name=datasets.Split.TEST,
+                    # SplitGenerator converts NamedSplit to str at runtime.
+                    name=datasets.Split.TEST,  # pyright: ignore[reportArgumentType]
                     gen_kwargs={"data_file": os.path.join(data_dir, "wiki.test.tokens"), "split": "test"},
                 ),
                 datasets.SplitGenerator(
-                    name=datasets.Split.TRAIN,
+                    name=datasets.Split.TRAIN,  # pyright: ignore[reportArgumentType]
                     gen_kwargs={"data_file": os.path.join(data_dir, "wiki.train.tokens"), "split": "train"},
                 ),
                 datasets.SplitGenerator(
-                    name=datasets.Split.VALIDATION,
+                    name=datasets.Split.VALIDATION,  # pyright: ignore[reportArgumentType]
                     gen_kwargs={"data_file": os.path.join(data_dir, "wiki.valid.tokens"), "split": "valid"},
                 ),
             ]
         else:
             if self.config.name == "wikitext-103-raw-v1":
-                data_file = dl_manager.download_and_extract(self.config.data_url)
+                data_file = cast(str, dl_manager.download_and_extract(self.config.data_url))
                 data_dir = os.path.join(data_file, "wikitext-103-raw")
                 return [
                     datasets.SplitGenerator(
-                        name=datasets.Split.TEST,
+                        name=datasets.Split.TEST, # pyright: ignore[reportArgumentType]
                         gen_kwargs={"data_file": os.path.join(data_dir, "wiki.test.raw"), "split": "test"},
                     ),
                     datasets.SplitGenerator(
-                        name=datasets.Split.TRAIN,
+                        name=datasets.Split.TRAIN, # pyright: ignore[reportArgumentType]
                         gen_kwargs={"data_file": os.path.join(data_dir, "wiki.train.raw"), "split": "train"},
                     ),
                     datasets.SplitGenerator(
-                        name=datasets.Split.VALIDATION,
+                        name=datasets.Split.VALIDATION, # pyright: ignore[reportArgumentType]
                         gen_kwargs={"data_file": os.path.join(data_dir, "wiki.valid.raw"), "split": "valid"},
                     ),
                 ]
             else:
                 if self.config.name == "wikitext-2-raw-v1":
-                    data_file = dl_manager.download_and_extract(self.config.data_url)
+                    data_file = cast(str, dl_manager.download_and_extract(self.config.data_url))
                     data_dir = os.path.join(data_file, "wikitext-2-raw")
                     return [
                         datasets.SplitGenerator(
-                            name=datasets.Split.TEST,
+                            name=datasets.Split.TEST, # pyright: ignore[reportArgumentType]
                             gen_kwargs={"data_file": os.path.join(data_dir, "wiki.test.raw"), "split": "test"},
                         ),
                         datasets.SplitGenerator(
-                            name=datasets.Split.TRAIN,
+                            name=datasets.Split.TRAIN, # pyright: ignore[reportArgumentType]
                             gen_kwargs={"data_file": os.path.join(data_dir, "wiki.train.raw"), "split": "train"},
                         ),
                         datasets.SplitGenerator(
-                            name=datasets.Split.VALIDATION,
+                            name=datasets.Split.VALIDATION, # pyright: ignore[reportArgumentType]
                             gen_kwargs={"data_file": os.path.join(data_dir, "wiki.valid.raw"), "split": "valid"},
                         ),
                     ]
                 else:
                     if self.config.name == "wikitext-2-v1":
-                        data_file = dl_manager.download_and_extract(self.config.data_url)
+                        data_file = cast(str, dl_manager.download_and_extract(self.config.data_url))
                         data_dir = os.path.join(data_file, "wikitext-2")
                         return [
                             datasets.SplitGenerator(
-                                name=datasets.Split.TEST,
+                                name=datasets.Split.TEST, # pyright: ignore[reportArgumentType]
                                 gen_kwargs={"data_file": os.path.join(data_dir, "wiki.test.tokens"), "split": "test"},
                             ),
                             datasets.SplitGenerator(
-                                name=datasets.Split.TRAIN,
+                                name=datasets.Split.TRAIN, # pyright: ignore[reportArgumentType]
                                 gen_kwargs={
                                     "data_file": os.path.join(data_dir, "wiki.train.tokens"),
                                     "split": "train",
                                 },
                             ),
                             datasets.SplitGenerator(
-                                name=datasets.Split.VALIDATION,
+                                name=datasets.Split.VALIDATION, # pyright: ignore[reportArgumentType]
                                 gen_kwargs={
                                     "data_file": os.path.join(data_dir, "wiki.valid.tokens"),
                                     "split": "valid",
@@ -217,10 +206,10 @@ class Wikitext(datasets.GeneratorBasedBuilder):
                             ),
                         ]
 
-    def _generate_examples(self, data_file, split):
-
+    def _generate_examples(self, **kwargs: Any) -> Iterator[tuple[Any, dict[str, Any]]]:
         """Yields examples."""
         # TODO(wikitext): Yields (key, example) tuples from the dataset
+        data_file = kwargs["data_file"]
         with open(data_file, encoding="utf-8") as f:
             for idx, row in enumerate(f):
                 if row.strip():

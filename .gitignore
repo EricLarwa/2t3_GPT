@@ -3,3 +3,4 @@ __pycache__/
 *.py[cod]
 tokenizer.json
 data/training/
+pyrightconfig.json

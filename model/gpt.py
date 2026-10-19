@@ -2,6 +2,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from typing import cast
 from torch.utils.checkpoint import checkpoint
 
 from .model_conf import ModelConfig
@@ -41,10 +42,20 @@ class LocalGPT(nn.Module):
         # yields a tensor of shape (batch_size, block_size, vocab_size)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
+        # Small initial weights keep tied embeddings from producing extreme logits.
+        self.apply(self._init_weights)
+
         # Optimization: Weight Tying
         # Reason: Pointing the weights of the lm_head to the token embedding layer reduces the number of parameters and improves generalization.
         # This will save the local VRAM (roughlty ~#M variables in an 8,000 token vocabulary with 768 embedding size
-        self.lm_head.weight = self.transformer.wte.weight
+        self.lm_head.weight = cast(nn.Embedding, self.transformer["wte"]).weight
+
+    @staticmethod
+    def _init_weights(module):
+        if isinstance(module, (nn.Linear, nn.Embedding)):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if isinstance(module, nn.Linear) and module.bias is not None:
+                nn.init.zeros_(module.bias)
 
     def gradient_checkpointing_enable(self):
         self.gradient_checkpointing = True
@@ -72,23 +83,26 @@ class LocalGPT(nn.Module):
         pos = torch.arange(0, T, dtype=torch.long, device=device)
 
         # Token and position embeddings
-        token_embeddings = self.transformer.wte(idx)  # Shape: (B, T, n_embd)
-        position_embeddings = self.transformer.wpe(pos)  # Shape: (T, n_embd)
+        token_embeddings = self.transformer["wte"](idx)  # Shape: (B, T, n_embd)
+        position_embeddings = self.transformer["wpe"](pos)  # Shape: (T, n_embd)
 
         # Combine token and position embeddings
         x = token_embeddings + position_embeddings.unsqueeze(0)  # Shape: (B, T, n_embd)
 
         # Apply dropout to the combined embeddings
-        x = self.transformer.drop(x)
+        x = self.transformer["drop"](x)
 
         # Pass through each transformer block
-        for block in self.transformer.h:
+        # ModuleDict indexing is typed as Module, so narrow the known ModuleList
+        # before iterating over the transformer blocks.
+        blocks = cast(nn.ModuleList, self.transformer["h"])
+        for block in blocks:
             if self.gradient_checkpointing and self.training:
                 x = checkpoint(block, x, use_reentrant=False)
             else:
                 x = block(x)
 
-        x = self.transformer.ln_f(x)
+        x = self.transformer["ln_f"](x)
 
         if targets is not None:
             # If training, calculate how wrong the predictions are.
