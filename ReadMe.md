@@ -51,7 +51,19 @@ With patience 2, it halves the learning rate after three consecutive
 non-improving checks, down to a minimum of `1e-5`. Scheduler history is saved
 in checkpoints and restored on resume. Older checkpoints initialize the
 scheduler from their saved best validation loss because their earlier plateau
-history is unavailable. There is currently no automatic early stopping.
+history is unavailable.
+
+Early stopping tracks consecutive validation checks without a meaningful loss
+decrease. Defaults are `--patience 8 --min-delta 0.01`. A decrease of more than
+0.01 from the early-stopping reference resets the counter; smaller cumulative
+decreases can eventually cross that threshold. The lowest observed validation
+loss still determines `best.pt`. Stopping state is saved on every checkpoint,
+and the final epoch is saved before stopping. Final text samples use the best
+saved validation weights, while `latest.pt` retains the actual resume position.
+Older checkpoints start with zero unsuccessful checks because that history
+was not recorded. A checkpoint already at its stopping limit will not train
+again unless the stopping setting is explicitly changed, for example with
+`--patience 0` to disable early stopping.
 
 The default dropout is 0.2 for new models. Resuming restores the checkpoint's
 dropout setting, so changing `model_conf.py` does not alter existing runs.
@@ -83,6 +95,47 @@ cover all complete validation contexts. The training sample score is a separate
 small diagnostic, not a generalization score. Generation uses temperature 0.8
 and top-k 40 sampling; adjust with `--temperature` and `--top-k`. More varied
 sampling does not itself improve model accuracy.
+
+You can also continue the best checkpoint with an explicit lower learning rate:
+
+```powershell
+.\local_ai_env\Scripts\python.exe main.py --resume --best --learning-rate 0.0001 --epochs 8
+```
+
+The learning-rate override is applied after loading optimizer state.
+
+### WikiText-103
+
+`data/wiki_103_training.py` supports the raw WikiText-103 dataset, including both
+training Parquet shards. It downloads each split separately and caches data,
+tokenizer artifacts, and checkpoints under `data/training/wikitext-103/`.
+WikiText-2 files and checkpoints remain separate.
+
+Start a new WikiText-103 training stage from your best WikiText-2 model:
+
+```powershell
+.\local_ai_env\Scripts\python.exe main.py --dataset wikitext-103 --init-from-best --epochs 3
+```
+
+This preserves the source weights, architecture, and tokenizer IDs. It starts
+new optimizer, scheduler, epoch, and early-stopping state for the new corpus,
+with a default learning rate of `0.0001`. It does not modify WikiText-2
+checkpoints. The checkpoint's dropout is also preserved. To train a fresh
+WikiText-103 model and tokenizer instead, omit `--init-from-best`.
+
+Continue or evaluate the new stage with:
+
+```powershell
+.\local_ai_env\Scripts\python.exe main.py --dataset wikitext-103 --resume --epochs 3
+.\local_ai_env\Scripts\python.exe main.py --dataset wikitext-103 --evaluate-only --best
+```
+
+Both datasets are tokenized in bounded batches into a memory-mapped int64 cache,
+avoiding one huge encoding and Python token list for WikiText-103. The cache is
+rebuilt when the tokenizer or corpus size/modification time changes. Validation
+is encoded with the training tokenizer and never used to train the tokenizer
+or update model weights. Corpus order and consecutive context chunks are
+preserved. Preparing a dataset does not automatically run model training.
 
 New models initialize embeddings and linear weights with standard deviation
 0.02, keeping tied-embedding logits from starting excessively large. Existing

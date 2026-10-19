@@ -52,6 +52,22 @@ def create_optimizer(model, device, optimizer_type=None):
     optimizer_class = bnb.optim.AdamW8bit if bnb is not None else torch.optim.AdamW  # pyright: ignore[reportPrivateImportUsage]
     return optimizer_class(model.parameters(), lr=6e-4, weight_decay=0.1)
 
+def decide_to_stop(epochs_without_improvement, patience=8):
+    """
+    Stop after consecutive validation checks without meaningful improvement.
+
+    Args:
+        epochs_without_improvement: Consecutive validation checks without improvement.
+        patience: Number of checks to allow; zero disables early stopping.
+
+    Returns:
+        True if training should be stopped, False otherwise.
+    """
+    # Stop if the validation loss hasn't improved for a certain number of epochs
+    # Count unsuccessful checks, rather than the absolute epoch number.
+    return patience > 0 and epochs_without_improvement >= patience
+
+
 
 class TransformerBlock(nn.Module):
     """
@@ -99,7 +115,8 @@ class TransformerBlock(nn.Module):
 
 def train_local_model(model, dataset, config, epochs=3, *, checkpoint_dir=None,
                       resume=None, tokenizer_json=None, validation_dataset=None,
-                      save_every=100):
+                      save_every=100, early_stopping_patience=None,
+                      early_stopping_min_delta=None, learning_rate=None):
     """
     Trains the LocalGPT model on the provided dataset.
 
@@ -113,10 +130,15 @@ def train_local_model(model, dataset, config, epochs=3, *, checkpoint_dir=None,
         tokenizer_json: Tokenizer serialized into the checkpoint for later inference.
         validation_dataset: Held-out contexts used to compare epochs.
         save_every: Save latest.pt after this many batches and at every epoch end.
+        early_stopping_patience: Checks without improvement before stopping; default 8.
+        early_stopping_min_delta: Minimum loss decrease to reset patience; default 0.01.
+        learning_rate: Explicit override, applied after restoring optimizer state.
     """
 
     if epochs < 1 or save_every < 1:
         raise ValueError("epochs and save_every must be positive")
+    if learning_rate is not None and (not 0 < learning_rate < float("inf")):
+        raise ValueError("learning_rate must be finite and positive")
     device = get_training_device()
     model = model.to(device)
 
@@ -133,7 +155,7 @@ def train_local_model(model, dataset, config, epochs=3, *, checkpoint_dir=None,
 
     scaler = GradScaler("cuda", enabled=device.type == "cuda")  # For mixed precision training
 
-    signature = hashlib.sha256(dataset.data.numpy().tobytes()).hexdigest()
+    signature = hashlib.sha256(memoryview(dataset.data.numpy())).hexdigest()
     data_info = {"sha256": signature, "block_size": dataset.block_size, "stride": dataset.stride}
     start_epoch, next_batch, global_step = 0, 0, 0
     best_validation_loss = float("inf")
@@ -154,6 +176,10 @@ def train_local_model(model, dataset, config, epochs=3, *, checkpoint_dir=None,
             torch.cuda.set_rng_state_all(resume["cuda_rng_state"])
         print(f"Resuming epoch {start_epoch + 1}, batch {next_batch}, step {global_step}")
 
+    if learning_rate is not None:
+        for group in optimizer.param_groups:
+            group["lr"] = learning_rate
+
     reduce_learning_rate = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="min", factor=0.5, patience=2, min_lr=1e-5,
     )
@@ -164,6 +190,14 @@ def train_local_model(model, dataset, config, epochs=3, *, checkpoint_dir=None,
             # Older checkpoints have a validation baseline but no scheduler history.
             reduce_learning_rate.step(best_validation_loss)
 
+    early_state = resume.get("early_stopping", {}) if resume is not None else {}
+    patience = early_stopping_patience if early_stopping_patience is not None else early_state.get("patience", 8)
+    min_delta = early_stopping_min_delta if early_stopping_min_delta is not None else early_state.get("min_delta", 0.01)
+    if patience < 0 or not 0 <= min_delta < float("inf"):
+        raise ValueError("Early stopping patience and min_delta must be non-negative and finite")
+    early_best_loss = early_state.get("best_loss", best_validation_loss)
+    bad_epochs = early_state.get("bad_epochs", 0)
+
     def persist(epoch, batch, *, best=False):
         if checkpoint_dir is None:
             return
@@ -172,6 +206,8 @@ def train_local_model(model, dataset, config, epochs=3, *, checkpoint_dir=None,
             "optimizer": optimizer.state_dict(), "optimizer_type": type(optimizer).__name__,
             "scaler": scaler.state_dict(), "epoch": epoch, "next_batch": batch,
             "scheduler": reduce_learning_rate.state_dict(),
+            "early_stopping": {"best_loss": early_best_loss, "bad_epochs": bad_epochs,
+                               "patience": patience, "min_delta": min_delta},
             "global_step": global_step, "best_validation_loss": best_validation_loss,
             "rng_state": torch.get_rng_state(),
             "cuda_rng_state": torch.cuda.get_rng_state_all() if device.type == "cuda" else [],
@@ -180,6 +216,23 @@ def train_local_model(model, dataset, config, epochs=3, *, checkpoint_dir=None,
         save_checkpoint(Path(checkpoint_dir) / "latest.pt", state)
         if best:
             save_checkpoint(Path(checkpoint_dir) / "best.pt", state)
+
+    def restore_best():
+        if checkpoint_dir is not None and validation_dataset is not None:
+            best_path = Path(checkpoint_dir) / "best.pt"
+            if best_path.is_file():
+                from .checkpoint import load_checkpoint
+
+                best = load_checkpoint(best_path)
+                if best["data_info"] != data_info or best["config"] != config_dict(config):
+                    raise ValueError("Best checkpoint belongs to different training data or configuration")
+                model.load_state_dict(best["model"])
+                print("Loaded best validation weights for final evaluation; latest.pt retains resume state")
+
+    if validation_dataset is not None and decide_to_stop(bad_epochs, patience):
+        print("Checkpoint already reached early stopping; use --patience 0 to continue explicitly")
+        restore_best()
+        return
 
     dataLoader = DataLoader(
         dataset,
@@ -225,11 +278,22 @@ def train_local_model(model, dataset, config, epochs=3, *, checkpoint_dir=None,
         if total_tokens:
             print(f"Epoch {epoch + 1} trained-token mean loss: {total_loss / total_tokens:.4f}")
         improved = False
+        stop = False
         if validation_dataset is not None:
             metrics = evaluate_model(model, validation_dataset, config.batch_size)
             print(f"Validation loss: {metrics['loss']:.4f} | Perplexity: {metrics['perplexity']:.2f}")
             improved = metrics["loss"] < best_validation_loss
             best_validation_loss = min(best_validation_loss, metrics["loss"])
             reduce_learning_rate.step(metrics["loss"])  # Adjust learning rate based on validation loss
+            if metrics["loss"] < early_best_loss - min_delta:
+                early_best_loss, bad_epochs = metrics["loss"], 0
+            else:
+                bad_epochs += 1
+            stop = decide_to_stop(bad_epochs, patience)
+            print(f"Validation checks without meaningful improvement: {bad_epochs}/{patience or 'disabled'}")
             print(f"Learning rate for next epoch: {optimizer.param_groups[0]['lr']:.6g}")
         persist(epoch + 1, 0, best=improved)
+        if stop:
+            print("Early stopping triggered. Ending training.")
+            break
+    restore_best()

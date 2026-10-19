@@ -7,7 +7,7 @@ class TokenizedDataset(Dataset):
     A high-performance PyTorch dataset that slices token sequences into context chunks.
 
     Args:
-        token_ids (list): A massive, flat list of integers representing your entire text corpus.
+        token_ids (list or Tensor): A flat list or memory-mapped tensor of corpus token IDs.
         block_size (int): The context window length (e.g., 512 tokens).
         stride (int): Distance between chunk starts; use block_size for sequential contexts.
 
@@ -22,7 +22,7 @@ class TokenizedDataset(Dataset):
             raise ValueError(f"Corpus must contain at least {block_size + 1} tokens")
         if stride < 1:
             raise ValueError("stride must be positive")
-        self.data = torch.tensor(token_ids, dtype=torch.long)
+        self.data = torch.as_tensor(token_ids, dtype=torch.long).contiguous()
         self.block_size = block_size
         self.stride = stride
 

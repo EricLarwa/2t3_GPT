@@ -6,6 +6,8 @@ from torch.utils.data import DataLoader
 
 from data.dataset import TokenizedDataset
 from data.wiki_2_training import prepare_wikitext2
+from data.wiki_103_training import prepare_wikitext103
+from data.tokenizer import encode_corpus
 from model.evaluate import evaluate_model, generate_text
 from model.gpt import LocalGPT
 from model.train import get_training_device, train_local_model
@@ -25,10 +27,13 @@ def setup_data() -> DataSetup:
     setup = parsers()
 
     dataset = TokenizedDataset(setup.token_ids, setup.config.block_size, stride=setup.config.block_size)
-    validation_path = prepare_wikitext2("validation")
-    validation_ids = setup.tokenizer.encode(validation_path.read_text(encoding="utf-8")).ids
+    prepare_corpus = prepare_wikitext2 if setup.args.dataset == "wikitext-2" else prepare_wikitext103
+    validation_path = prepare_corpus("validation")
+    validation_ids = encode_corpus(setup.tokenizer, validation_path)
     validation = TokenizedDataset(validation_ids, setup.config.block_size, stride=setup.config.block_size)
     model = LocalGPT(setup.config)
+    if setup.initialization is not None:
+        model.load_state_dict(setup.initialization["model"])
 
     if setup.args.evaluate_only:
         if setup.checkpoint is None:
@@ -42,6 +47,9 @@ def setup_data() -> DataSetup:
             model, dataset, setup.config, epochs=setup.args.epochs, checkpoint_dir=setup.checkpoint_dir,
             resume=setup.checkpoint, tokenizer_json=setup.tokenizer.to_str(), validation_dataset=validation,
             save_every=setup.args.save_every,
+            early_stopping_patience=setup.args.patience,
+            early_stopping_min_delta=setup.args.min_delta,
+            learning_rate=setup.args.learning_rate,
         )
     model.eval()  # Disable dropout for evaluation
     device = next(model.parameters()).device
