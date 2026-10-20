@@ -65,7 +65,7 @@ def setup_data() -> DataSetup:
     print(f"Training sample perplexity: {math.exp(loss.item()):.2f}")
 
     # Give the model a corpus prefix and let it continue.
-    prompt = x[:1, :8]
+    prompt = x[:2, :7]
     prompt_text = setup.args.prompt if setup.args.prompt is not None else setup.tokenizer.decode(prompt[0].tolist())
     print("Prompt:", prompt_text)
     print("Continuation:", generate_text(
