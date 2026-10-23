@@ -181,7 +181,7 @@ def train_local_model(model, dataset, config, epochs=3, *, checkpoint_dir=None,
             group["lr"] = learning_rate
 
     reduce_learning_rate = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="min", factor=0.5, patience=2, min_lr=1e-5,
+        optimizer, mode="min", factor=0.5, patience=2, min_lr=1e-6,
     )
     if resume is not None:
         if "scheduler" in resume:
@@ -237,7 +237,7 @@ def train_local_model(model, dataset, config, epochs=3, *, checkpoint_dir=None,
     dataLoader = DataLoader(
         dataset,
         batch_size=config.batch_size,
-        shuffle=False,
+        shuffle=True,
         num_workers=0,
         pin_memory=device.type == "cuda",
         # Isolate DataLoader's iterator seed from model dropout when resuming.

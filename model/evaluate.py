@@ -14,7 +14,7 @@ def evaluate_model(model, dataset, batch_size):
     total_loss = 0.0
     total_tokens = 0
     try:
-        for x, y in DataLoader(dataset, batch_size=batch_size, shuffle=False):
+        for x, y in DataLoader(dataset, batch_size=batch_size, shuffle=True):
             x, y = x.to(device), y.to(device)
             _, loss = model(x, y)
             count = y.numel()
